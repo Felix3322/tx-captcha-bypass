@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import sys
+import os
 import cv2
 import numpy as np
 
@@ -41,6 +42,27 @@ def merge_boxes(boxes, gap=8):
     return merged
 
 
+def recognize_digit(roi, num_range=range(1, 5)):
+    """简单模板匹配识别数字，返回识别到的数字或 None"""
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    gray = cv2.resize(gray, (30, 30))
+    _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    best = None
+    best_score = -1
+    for n in num_range:
+        tmpl = np.zeros((30, 30), dtype=np.uint8)
+        cv2.putText(tmpl, str(n), (2, 27), cv2.FONT_HERSHEY_SIMPLEX, 1, 255, 2, cv2.LINE_AA)
+        res = cv2.matchTemplate(gray, tmpl, cv2.TM_CCOEFF_NORMED)
+        _, score, _, _ = cv2.minMaxLoc(res)
+        if score > best_score:
+            best_score = score
+            best = n
+    if best_score < 0.2:  # 阈值太低认为没识别出来
+        return None
+    return best
+
+
 def detect_click_points(img):
     h, w = img.shape[:2]
     # 切割
@@ -60,7 +82,6 @@ def detect_click_points(img):
     boxes = []
     for c in cnts:
         x, y, wc, hc = cv2.boundingRect(c)
-        area = w * h
         if 300 < wc * hc < 8000:  # 过滤大小极端的块
             boxes.append([x, y, wc, hc])
 
@@ -73,9 +94,22 @@ def detect_click_points(img):
     if len(boxes) < CLICK_N:
         raise RuntimeError("合并后不足所需数量，调 gap 或面积阈值")
 
-    # 按面积排序取前 N 再按 x 排
+    # 按面积排序取前 N
     boxes = sorted(boxes, key=lambda b: b[2] * b[3], reverse=True)[:CLICK_N]
-    boxes = sorted(boxes, key=lambda b: b[0])
+
+    # 根据数字识别结果排序，识别失败则按行列排序
+    ordered = []
+    for bx in boxes:
+        x, y, wc, hc = bx
+        roi = main[y:y + hc, x:x + wc]
+        d = recognize_digit(roi)
+        ordered.append((d if d is not None else float('inf'), bx))
+
+    if all(d is not None for d, _ in ordered):
+        ordered.sort(key=lambda t: t[0])
+        boxes = [b for _, b in ordered]
+    else:
+        boxes = sorted(boxes, key=lambda b: (b[1], b[0]))
 
     # 7. 计算质心
     points = []
@@ -108,9 +142,10 @@ def main():
         cv2.circle(vis, (x, y), 6, (0, 0, 255), -1)
         cv2.putText(vis, str(i), (x - 12, y - 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    cv2.imshow("result", vis)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    if os.environ.get("DISPLAY"):
+        cv2.imshow("result", vis)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
